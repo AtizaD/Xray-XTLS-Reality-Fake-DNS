@@ -1,117 +1,109 @@
-# Xray XTLS Reality with Fake DNS
+# Xray-XTLS-Reality-Fake-DNS
 
-A powerful setup script for creating a high-security, DPI-resistant proxy server using Xray with XTLS Reality protocol and Fake DNS technology.
+A streamlined bash script for setting up Xray with XTLS, Reality protocol, and Fake DNS functionality on Ubuntu servers.
 
 ## Features
 
-- **XTLS Reality Protocol**: Advanced security using Reality protocol for superior traffic obfuscation
-- **Vision Flow**: Implements the optimized `xtls-rprx-vision` flow for better performance and security
-- **Fake DNS System**: Prevents DNS-based tracking, censorship, and DPI detection
-- **Automated Setup**: One-click installation and configuration on Ubuntu systems
-- **DPI Evasion**: Multiple layers of protection against Deep Packet Inspection
-- **Domain Fronting**: Appears as legitimate traffic to common websites
+- **Xray Core** - The latest version of Xray-core is installed automatically
+- **XTLS-Vision** - Utilizes the high-performance XTLS-Vision flow
+- **Reality Protocol** - Advanced TLS fingerprinting evasion with server name validation
+- **Fake DNS** - Prevents DNS leaks by routing all DNS queries through private IPs
+- **Auto-configuration** - Automatically generates all necessary keys and identifiers
+- **Client-ready Output** - Displays all information needed to configure clients
 
 ## Requirements
 
-- Ubuntu server (18.04+)
-- Root access
-- Open port 443 (configurable)
+- Ubuntu server (18.04 LTS or newer recommended)
+- Root privileges
+- Open port 443 (TCP)
 
-## Installation
+## Quick Installation
 
-1. Clone this repository:
 ```bash
-git clone https://github.com/AtizaD/Xray-XTLS-Reality-Fake-DNS.git
-cd Xray-XTLS-Reality-Fake-DNS
-```
+# Download the script
+wget https://raw.githubusercontent.com/AtizaD/Xray-XTLS-Reality-Fake-DNS/main/setup.sh
 
-2. Make the script executable:
-```bash
+# Make it executable
 chmod +x setup.sh
-```
 
-3. Run the setup script:
-```bash
+# Run the script
 sudo ./setup.sh
 ```
 
-4. Take note of the configuration information displayed after installation
+## What the Script Does
+
+1. Updates the system and installs dependencies
+2. Installs the latest version of Xray Core
+3. Generates X25519 keypair for the Reality protocol
+4. Configures Xray with VLESS + TCP + XTLS-Vision + Reality
+5. Sets up Fake DNS to prevent DNS leaks
+6. Configures routing rules to block connections to private IPs and China
+7. Starts and enables the Xray service
+8. Displays all information needed for client configuration
 
 ## Client Configuration
 
-After running the script, you'll receive configuration details similar to:
+After running the script, you'll receive all the necessary information to configure your client applications:
 
-```
-=========== CONFIGURATION INFO =============
-Server IP: 123.456.789.0
-Port: 443
-Protocol: VLESS
-ID (UUID): 00000000-0000-0000-0000-000000000000
-Flow: xtls-rprx-vision
-Network: tcp
-Security: reality
-SNI: www.whatsapp.com
-Fingerprint: chrome
-Public Key: abcdefghijklmnopqrstuvwxyz123456
-============================================
-```
+- Server IP
+- Port: 443
+- Protocol: VLESS
+- UUID
+- Flow: xtls-rprx-vision
+- Network: tcp
+- Security: reality
+- SNI: www.whatsapp.com
+- Fingerprint: chrome
+- Public Key
 
-Enter these details into compatible clients:
+## Compatible Clients
+
+This setup works with various clients that support Xray with Reality protocol:
+
 - v2rayN (Windows)
 - v2rayNG (Android)
 - Nekoray (Cross-platform)
 - Shadowrocket (iOS)
+- V2Box (iOS)
+- Sing-box (Cross-platform)
 
-## How It Works
+## Fake DNS Functionality
 
-### Reality Protocol
-Reality implements a next-generation TLS obfuscation that creates truly indistinguishable traffic patterns from legitimate websites.
+The Fake DNS feature intercepts DNS requests and returns virtual IP addresses from a private range (198.18.0.0/16). This helps:
 
-### Fake DNS
-The Fake DNS system intercepts DNS queries and:
-- Routes them through encrypted channels
-- Uses a private IP pool for domain resolution
-- Prevents DNS-based censorship and logging
-
-### Anti-DPI Measures
-- Domain fronting through WhatsApp SNI
-- TCP with XTLS-Vision for optimized traffic patterns
-- IP-based routing strategies that prevent domain resolution leaks
-
-## Advanced Configuration
-
-The default setup uses `www.whatsapp.com` as the target domain. To change this or other settings, edit the script before running, or modify `/usr/local/etc/xray/config.json` after installation.
-
-## Troubleshooting
-
-If you encounter issues:
-
-1. Check Xray status:
-```bash
-systemctl status xray
-```
-
-2. View logs:
-```bash
-journalctl -u xray --no-pager
-```
-
-3. Verify configuration:
-```bash
-xray -test -config /usr/local/etc/xray/config.json
-```
+- Prevent DNS leaks
+- Ensure all traffic goes through the proxy
+- Improve security by using trusted DNS providers (Cloudflare and Google)
 
 ## Security Considerations
 
-- This setup helps evade DPI but is not guaranteed to work against all censorship systems
-- Keep your client configuration private
-- Regularly update the Xray core: `bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install`
+- The script blocks connections to private IP ranges and China IP ranges
+- All DNS queries are handled securely through Cloudflare DNS-over-HTTPS or Google DNS
+- The Reality protocol verifies server names to prevent MITM attacks
+
+## Troubleshooting
+
+If you encounter issues after installation:
+
+1. Check the Xray service status:
+   ```
+   systemctl status xray
+   ```
+
+2. View the Xray logs:
+   ```
+   journalctl -u xray -f
+   ```
+
+3. Verify that port 443 is open:
+   ```
+   lsof -i :443
+   ```
 
 ## License
 
-MIT License
+This project is licensed under the MIT License - see the LICENSE file for details.
 
-## Acknowledgments
+## Disclaimer
 
-- [Xray-core Project](https://github.com/XTLS/Xray-core)
-- [Project X Community](https://github.com/XTLS)
+This tool is designed for legitimate privacy protection and secure communication. Users are responsible for complying with all applicable laws and regulations in their jurisdiction.
