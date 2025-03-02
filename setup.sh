@@ -100,7 +100,11 @@ change_sni() {
     echo -e "3) www.amazon.com"
     echo -e "4) www.cloudflare.com"
     echo -e "5) www.google.com"
-    echo -e "6) Custom domain"
+    echo -e "6) www.ayoba.me"
+    echo -e "7) www.facebook.com"
+    echo -e "8) www.whatsapp.com"
+    echo -e "9) www.mtnhoods.com"
+    echo -e "10) Custom domain"
     echo
     read -p "Enter your choice [1-6]: " sni_choice
     
@@ -110,7 +114,11 @@ change_sni() {
         3) dest_server="www.amazon.com" ;;
         4) dest_server="www.cloudflare.com" ;;
         5) dest_server="www.google.com" ;;
-        6)
+        6) dest_server="www.ayoba.me" ;;
+        7) dest_server="www.facebook.com" ;;
+        8) dest_server="www.whatsapp.com" ;;
+        9) dest_server="www.mtnhoods.com" ;;
+        10)
             read -p "Enter custom domain (without https://): " custom_domain
             if [ -n "$custom_domain" ]; then
                 dest_server="$custom_domain"
