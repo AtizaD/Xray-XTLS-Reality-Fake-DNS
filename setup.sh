@@ -1,3 +1,4 @@
+#!/bin/bash
 # === MULTIPLE USER SUPPORT ===
 # Variables to store users (compatible with basic bash)
 user_uuids=("$uuid")
