@@ -1,25 +1,331 @@
-#!/bin/bash
-# Xray + XTLS + Reality + Fake DNS Setup Script for Ubuntu
+# === MULTIPLE USER SUPPORT ===
+# Array to store multiple users
+declare -A users
+users[${uuid}]="Default User"
 
-# Step 1: Update system and install dependencies
-sudo apt update && sudo apt upgrade -y
-sudo apt install -y curl socat unzip wget jq
+# Function to manage users
+manage_users() {
+    display_banner
+    echo -e "${CYAN}User Management${NC}"
+    echo -e "${YELLOW}Current Users:${NC}"
+    
+    # Display all users
+    local i=1
+    for id in "${!users[@]}"; do
+        echo -e "${YELLOW}$i)${NC} ${users[$id]} - ${CYAN}UUID:${NC} ${id}"
+        ((i++))
+    done
+    
+    echo
+    echo -e "${YELLOW}a)${NC} Add new user"
+    echo -e "${YELLOW}d)${NC} Delete user"
+    echo -e "${YELLOW}r)${NC} Rename user"
+    echo -e "${YELLOW}b)${NC} Back to main menu"
+    echo
+    
+    read -p "Enter your choice: " user_choice
+    
+    case $user_choice in
+        a)
+            add_user
+            ;;
+        d)
+            delete_user
+            ;;
+        r)
+            rename_user
+            ;;
+        b)
+            return
+            ;;
+        *)
+            echo -e "${RED}Invalid choice.${NC}"
+            ;;
+    esac
+    
+    read -p "Press Enter to continue..."
+    manage_users
+}
 
-# Step 2: Install Xray Core
-bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+# Function to add a new user
+add_user() {
+    local new_uuid=$(cat /proc/sys/kernel/random/uuid)
+    read -p "Enter name for new user: " user_name
+    
+    if [[ -z "$user_name" ]]; then
+        user_name="User-$(date +%s)"
+    fi
+    
+    users[$new_uuid]="$user_name"
+    echo -e "${GREEN}New user added:${NC}"
+    echo -e "${CYAN}Name:${NC} $user_name"
+    echo -e "${CYAN}UUID:${NC} $new_uuid"
+}
 
-# Step 3: Generate Reality keys
-x25519_keys=$(xray x25519)
-private_key=$(echo "$x25519_keys" | grep "Private key" | cut -d ' ' -f3)
-public_key=$(echo "$x25519_keys" | grep "Public key" | cut -d ' ' -f3)
+# Function to delete a user
+delete_user() {
+    if [ ${#users[@]} -le 1 ]; then
+        echo -e "${RED}Cannot delete the last user.${NC}"
+        return
+    fi
+    
+    echo -e "${YELLOW}Select user to delete:${NC}"
+    local i=1
+    local ids=()
+    
+    for id in "${!users[@]}"; do
+        echo -e "${YELLOW}$i)${NC} ${users[$id]} - ${CYAN}UUID:${NC} ${id}"
+        ids[$i]=$id
+        ((i++))
+    done
+    
+    read -p "Enter number of user to delete: " user_number
+    
+    if [[ "$user_number" =~ ^[0-9]+$ ]] && [ "$user_number" -ge 1 ] && [ "$user_number" -lt "$i" ]; then
+        local delete_uuid=${ids[$user_number]}
+        local delete_name=${users[$delete_uuid]}
+        unset users[$delete_uuid]
+        echo -e "${GREEN}User '$delete_name' with UUID '$delete_uuid' deleted.${NC}"
+    else
+        echo -e "${RED}Invalid selection.${NC}"
+    fi
+}
 
-# Step 4: Set up configuration variables
-dest_server="www.whatsapp.com"
-server_ip=$(curl -s ifconfig.me)
-uuid=$(cat /proc/sys/kernel/random/uuid)
+# Function to rename a user
+rename_user() {
+    echo -e "${YELLOW}Select user to rename:${NC}"
+    local i=1
+    local ids=()
+    
+    for id in "${!users[@]}"; do
+        echo -e "${YELLOW}$i)${NC} ${users[$id]} - ${CYAN}UUID:${NC} ${id}"
+        ids[$i]=$id
+        ((i++))
+    done
+    
+    read -p "Enter number of user to rename: " user_number
+    
+    if [[ "$user_number" =~ ^[0-9]+$ ]] && [ "$user_number" -ge 1 ] && [ "$user_number" -lt "$i" ]; then
+        local rename_uuid=${ids[$user_number]}
+        read -p "Enter new name for ${users[$rename_uuid]}: " new_name
+        
+        if [[ -n "$new_name" ]]; then
+            local old_name=${users[$rename_uuid]}
+            users[$rename_uuid]="$new_name"
+            echo -e "${GREEN}User renamed from '$old_name' to '$new_name'.${NC}"
+        else
+            echo -e "${RED}Name cannot be empty.${NC}"
+        fi
+    else
+        echo -e "${RED}Invalid selection.${NC}"
+    fi
+}
 
-# Step 5: Create Xray configuration file with Fake DNS
-cat << EOF > /usr/local/etc/xray/config.json
+# === TLS FINGERPRINT CUSTOMIZATION ===
+# Variable to store the current fingerprint
+fingerprint="chrome"
+
+# Function to change TLS fingerprint
+change_fingerprint() {
+    display_banner
+    echo -e "${CYAN}Current TLS Fingerprint: ${NC}${fingerprint}"
+    echo
+    echo -e "${YELLOW}Available Fingerprints:${NC}"
+    echo -e "${YELLOW}1)${NC} chrome (Default)"
+    echo -e "${YELLOW}2)${NC} firefox"
+    echo -e "${YELLOW}3)${NC} safari"
+    echo -e "${YELLOW}4)${NC} ios"
+    echo -e "${YELLOW}5)${NC} android"
+    echo -e "${YELLOW}6)${NC} edge"
+    echo -e "${YELLOW}7)${NC} 360"
+    echo -e "${YELLOW}8)${NC} qq"
+    echo -e "${YELLOW}9)${NC} random"
+    echo -e "${YELLOW}10)${NC} Back to main menu"
+    echo
+    
+    read -p "Enter your choice [1-10]: " fp_choice
+    
+    case $fp_choice in
+        1) fingerprint="chrome" ;;
+        2) fingerprint="firefox" ;;
+        3) fingerprint="safari" ;;
+        4) fingerprint="ios" ;;
+        5) fingerprint="android" ;;
+        6) fingerprint="edge" ;;
+        7) fingerprint="360" ;;
+        8) fingerprint="qq" ;;
+        9) fingerprint="random" ;;
+        10) return ;;
+        *) 
+            echo -e "${RED}Invalid choice.${NC}"
+            read -p "Press Enter to continue..."
+            change_fingerprint
+            return
+            ;;
+    esac
+    
+    echo -e "${GREEN}TLS Fingerprint set to: ${NC}${fingerprint}"
+    read -p "Press Enter to continue..."
+}
+
+# === FIREWALL CONFIGURATION ===
+# Function to configure firewall (UFW)
+configure_firewall() {
+    display_banner
+    echo -e "${BLUE}Firewall Configuration${NC}"
+    
+    # Check if UFW is installed
+    if ! command -v ufw &> /dev/null; then
+        echo -e "${YELLOW}UFW not found. Installing...${NC}"
+        apt update
+        apt install -y ufw
+    fi
+    
+    # Check UFW status
+    ufw_status=$(ufw status | grep "Status: " | cut -d ' ' -f2)
+    
+    echo -e "${YELLOW}Current UFW Status: ${NC}${ufw_status}"
+    echo -e "${YELLOW}Xray Port: ${NC}${server_port}"
+    echo
+    echo -e "${YELLOW}1)${NC} Allow Xray port"
+    echo -e "${YELLOW}2)${NC} Enable UFW"
+    echo -e "${YELLOW}3)${NC} Disable UFW"
+    echo -e "${YELLOW}4)${NC} Show UFW status"
+    echo -e "${YELLOW}5)${NC} Back to main menu"
+    echo
+    
+    read -p "Enter your choice [1-5]: " fw_choice
+    
+    case $fw_choice in
+        1)
+            echo -e "${BLUE}Configuring UFW for Xray port ${server_port}...${NC}"
+            ufw allow ssh comment 'SSH access'
+            ufw allow ${server_port}/tcp comment 'Xray VLESS'
+            echo -e "${GREEN}Firewall rules added for port ${server_port}.${NC}"
+            ;;
+        2)
+            if [ "$ufw_status" != "active" ]; then
+                echo -e "${YELLOW}Warning: This might disconnect your SSH session if port 22 is not allowed.${NC}"
+                read -p "Are you sure you want to enable UFW? (y/n): " confirm
+                if [[ "$confirm" =~ ^[Yy]$ ]]; then
+                    ufw allow ssh comment 'SSH access'
+                    ufw --force enable
+                    echo -e "${GREEN}UFW enabled.${NC}"
+                fi
+            else
+                echo -e "${YELLOW}UFW is already enabled.${NC}"
+            fi
+            ;;
+        3)
+            if [ "$ufw_status" = "active" ]; then
+                ufw disable
+                echo -e "${GREEN}UFW disabled.${NC}"
+            else
+                echo -e "${YELLOW}UFW is already disabled.${NC}"
+            fi
+            ;;
+        4)
+            ufw status verbose
+            ;;
+        5)
+            return
+            ;;
+        *)
+            echo -e "${RED}Invalid choice.${NC}"
+            ;;
+    esac
+    
+    read -p "Press Enter to continue..."
+    configure_firewall
+}
+
+# === UNINSTALL FUNCTION ===
+# Function to uninstall Xray
+uninstall_xray() {
+    display_banner
+    echo -e "${RED}WARNING: This will completely remove Xray from your system.${NC}"
+    read -p "Are you sure you want to continue? (y/n): " confirm
+    
+    if [[ ! "$confirm" =~ ^[Yy]$ ]]; then
+        echo -e "${GREEN}Uninstallation cancelled.${NC}"
+        read -p "Press Enter to continue..."
+        return
+    fi
+    
+    echo -e "${BLUE}Stopping Xray service...${NC}"
+    systemctl stop xray
+    systemctl disable xray
+    
+    echo -e "${BLUE}Removing Xray files...${NC}"
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove
+    
+    echo -e "${BLUE}Removing configuration files...${NC}"
+    rm -rf /usr/local/etc/xray
+    
+    echo -e "${BLUE}Removing firewall rules...${NC}"
+    if command -v ufw &> /dev/null; then
+        ufw delete allow ${server_port}/tcp
+    fi
+    
+    installed=false
+    echo -e "${GREEN}Xray successfully uninstalled from the system.${NC}"
+    read -p "Press Enter to continue..."
+}
+
+# === UPDATE CHECKER ===
+# Function to check for Xray updates
+check_updates() {
+    display_banner
+    echo -e "${BLUE}Checking for Xray updates...${NC}"
+    
+    # Get current installed version
+    current_version=$(xray -version | head -n1 | cut -d ' ' -f2)
+    
+    # Get latest version from GitHub
+    latest_version=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    
+    echo -e "${CYAN}Current version: ${NC}${current_version}"
+    echo -e "${CYAN}Latest version: ${NC}${latest_version}"
+    
+    if [ "$current_version" = "$latest_version" ]; then
+        echo -e "${GREEN}You have the latest version of Xray installed.${NC}"
+    else
+        echo -e "${YELLOW}A new version of Xray is available.${NC}"
+        read -p "Do you want to update? (y/n): " update_choice
+        
+        if [[ "$update_choice" =~ ^[Yy]$ ]]; then
+            echo -e "${BLUE}Updating Xray...${NC}"
+            bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+            echo -e "${GREEN}Xray updated successfully.${NC}"
+            restart_xray
+        fi
+    fi
+    
+    read -p "Press Enter to continue..."
+}
+
+# === MODIFIED CONFIGURATION FUNCTIONS ===
+# Modified function to create Xray configuration with multiple users and custom fingerprint
+create_config() {
+    echo -e "${BLUE}Creating Xray configuration file with Fake DNS...${NC}"
+    
+    # Start building clients JSON array
+    local clients_json="["
+    local first=true
+    
+    for user_uuid in "${!users[@]}"; do
+        if [ "$first" = true ]; then
+            first=false
+        else
+            clients_json+=","
+        fi
+        
+        clients_json+=$'\n          {\n            "id": "'$user_uuid'",\n            "flow": "xtls-rprx-vision"\n          }'
+    done
+    
+    clients_json+=$'\n        ]'
+    
+    cat << EOF > /usr/local/etc/xray/config.json
 {
   "log": {
     "loglevel": "warning"
@@ -44,15 +350,10 @@ cat << EOF > /usr/local/etc/xray/config.json
   "inbounds": [
     {
       "listen": "0.0.0.0",
-      "port": 443,
+      "port": ${server_port},
       "protocol": "vless",
       "settings": {
-        "clients": [
-          {
-            "id": "${uuid}",
-            "flow": "xtls-rprx-vision"
-          }
-        ],
+        "clients": ${clients_json},
         "decryption": "none"
       },
       "streamSettings": {
@@ -63,8 +364,8 @@ cat << EOF > /usr/local/etc/xray/config.json
           "dest": "${dest_server}:443",
           "xver": 0,
           "serverNames": [
-            "www.whatsapp.com",
-            "web.whatsapp.com"
+            "${dest_server}",
+            "web.${dest_server}"
           ],
           "privateKey": "${private_key}",
           "shortIds": [""]
@@ -97,33 +398,100 @@ cat << EOF > /usr/local/etc/xray/config.json
   }
 }
 EOF
+    echo -e "${GREEN}Configuration file created successfully.${NC}"
+}
 
-# Step 6: Restart and Enable Xray service
-systemctl restart xray
-systemctl enable xray
+# Modified function to display client configuration (show all users)
+display_config() {
+    echo -e "${YELLOW}=========== CONFIGURATION INFO =============${NC}"
+    echo -e "${CYAN}Server IP: ${NC}${server_ip}"
+    echo -e "${CYAN}Port: ${NC}${server_port}"
+    echo -e "${CYAN}Protocol: ${NC}VLESS"
+    echo -e "${CYAN}Flow: ${NC}xtls-rprx-vision"
+    echo -e "${CYAN}Network: ${NC}tcp"
+    echo -e "${CYAN}Security: ${NC}reality"
+    echo -e "${CYAN}SNI: ${NC}${dest_server}"
+    echo -e "${CYAN}Fingerprint: ${NC}${fingerprint}"
+    echo -e "${CYAN}Public Key: ${NC}${public_key}"
+    
+    echo -e "${YELLOW}------------- USERS ----------------------${NC}"
+    for user_uuid in "${!users[@]}"; do
+        echo -e "${CYAN}User: ${NC}${users[$user_uuid]}"
+        echo -e "${CYAN}UUID: ${NC}${user_uuid}"
+        echo
+    done
+    
+    echo -e "${YELLOW}============================================${NC}"
+    echo -e "Use the above info to configure your client (v2rayNG, Nekoray, etc.)"
+}
 
-# Step 7: Display Client Configuration
-echo "=========== CONFIGURATION INFO ============="
-echo "Server IP: ${server_ip}"
-echo "Port: 443"
-echo "Protocol: VLESS"
-echo "ID (UUID): ${uuid}"
-echo "Flow: xtls-rprx-vision"
-echo "Network: tcp"
-echo "Security: reality"
-echo "SNI: www.whatsapp.com"
-echo "Fingerprint: chrome"
-echo "Public Key: ${public_key}"
-echo "============================================"
-echo "Use the above info to configure your client (v2rayNG, Nekoray, etc.)"
-
-# Step 8: Verify Xray Status
-systemctl status xray --no-pager
-
-# Step 9: Display Fake DNS Information
-echo "=========== FAKE DNS INFO =================="
-echo "Fake DNS has been enabled with the following settings:"
-echo "- DNS Servers: Cloudflare DNS-over-HTTPS (1.1.1.1), Google DNS (8.8.8.8)"
-echo "- Fake IP Pool: 198.18.0.0/16"
-echo "- Domain Strategy: IPIfNonMatch with UseIP for outbound connections"
-echo "============================================"
+# === MAIN MENU MODIFICATION ===
+# Updated main menu function with new options
+main_menu() {
+    while true; do
+        display_banner
+        echo -e "${CYAN}Server IP: ${NC}${server_ip}"
+        echo -e "${CYAN}Current Status: ${NC}$(if [ "$installed" = true ]; then echo -e "${GREEN}Installed${NC}"; else echo -e "${RED}Not Installed${NC}"; fi)"
+        echo
+        echo -e "${YELLOW}1)${NC} Install/Reinstall Xray with Reality"
+        echo -e "${YELLOW}2)${NC} Manage Users"
+        echo -e "${YELLOW}3)${NC} Change SNI Destination"
+        echo -e "${YELLOW}4)${NC} Change Port"
+        echo -e "${YELLOW}5)${NC} Change TLS Fingerprint"
+        echo -e "${YELLOW}6)${NC} Regenerate Reality Keys"
+        echo -e "${YELLOW}7)${NC} Configure Firewall"
+        echo -e "${YELLOW}8)${NC} Apply Changes"
+        echo -e "${YELLOW}9)${NC} Display Current Configuration"
+        echo -e "${YELLOW}10)${NC} Check for Updates"
+        echo -e "${YELLOW}11)${NC} Uninstall Xray"
+        echo -e "${YELLOW}12)${NC} Exit"
+        echo
+        read -p "Enter your choice [1-12]: " main_choice
+        
+        case $main_choice in
+            1)
+                perform_installation
+                ;;
+            2)
+                manage_users
+                ;;
+            3)
+                change_sni
+                ;;
+            4)
+                change_port
+                ;;
+            5)
+                change_fingerprint
+                ;;
+            6)
+                regenerate_keys
+                ;;
+            7)
+                configure_firewall
+                ;;
+            8)
+                apply_changes
+                ;;
+            9)
+                display_banner
+                display_config
+                read -p "Press Enter to continue..."
+                ;;
+            10)
+                check_updates
+                ;;
+            11)
+                uninstall_xray
+                ;;
+            12)
+                echo -e "${GREEN}Exiting the script. Thank you for using Xray Reality setup!${NC}"
+                exit 0
+                ;;
+            *)
+                echo -e "${RED}Invalid choice. Please enter a number between 1 and 12.${NC}"
+                read -p "Press Enter to continue..."
+                ;;
+        esac
+    done
+}
