@@ -21,13 +21,7 @@ A streamlined bash script for setting up Xray with XTLS, Reality protocol, and F
 
 ```bash
 # Download the script
-wget https://raw.githubusercontent.com/AtizaD/Xray-XTLS-Reality-Fake-DNS/main/setup.sh
-
-# Make it executable
-chmod +x setup.sh
-
-# Run the script
-sudo ./setup.sh
+wget https://raw.githubusercontent.com/AtizaD/Xray-XTLS-Reality-Fake-DNS/main/setup.sh && chmod +x setup.sh && sudo ./setup.sh
 ```
 
 ## What the Script Does
