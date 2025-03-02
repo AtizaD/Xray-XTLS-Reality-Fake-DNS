@@ -1,7 +1,7 @@
 # === MULTIPLE USER SUPPORT ===
-# Array to store multiple users
-declare -A users
-users[${uuid}]="Default User"
+# Variables to store users (compatible with basic bash)
+user_uuids=("$uuid")
+user_names=("Default User")
 
 # Function to manage users
 manage_users() {
@@ -10,9 +10,9 @@ manage_users() {
     echo -e "${YELLOW}Current Users:${NC}"
     
     # Display all users
-    local i=1
-    for id in "${!users[@]}"; do
-        echo -e "${YELLOW}$i)${NC} ${users[$id]} - ${CYAN}UUID:${NC} ${id}"
+    local i=0
+    while [ $i -lt ${#user_uuids[@]} ]; do
+        echo -e "${YELLOW}$((i+1)))${NC} ${user_names[$i]} - ${CYAN}UUID:${NC} ${user_uuids[$i]}"
         ((i++))
     done
     
@@ -52,11 +52,12 @@ add_user() {
     local new_uuid=$(cat /proc/sys/kernel/random/uuid)
     read -p "Enter name for new user: " user_name
     
-    if [[ -z "$user_name" ]]; then
+    if [ -z "$user_name" ]; then
         user_name="User-$(date +%s)"
     fi
     
-    users[$new_uuid]="$user_name"
+    user_uuids+=("$new_uuid")
+    user_names+=("$user_name")
     echo -e "${GREEN}New user added:${NC}"
     echo -e "${CYAN}Name:${NC} $user_name"
     echo -e "${CYAN}UUID:${NC} $new_uuid"
@@ -64,27 +65,29 @@ add_user() {
 
 # Function to delete a user
 delete_user() {
-    if [ ${#users[@]} -le 1 ]; then
+    if [ ${#user_uuids[@]} -le 1 ]; then
         echo -e "${RED}Cannot delete the last user.${NC}"
         return
     fi
     
     echo -e "${YELLOW}Select user to delete:${NC}"
-    local i=1
-    local ids=()
-    
-    for id in "${!users[@]}"; do
-        echo -e "${YELLOW}$i)${NC} ${users[$id]} - ${CYAN}UUID:${NC} ${id}"
-        ids[$i]=$id
+    local i=0
+    while [ $i -lt ${#user_uuids[@]} ]; do
+        echo -e "${YELLOW}$((i+1)))${NC} ${user_names[$i]} - ${CYAN}UUID:${NC} ${user_uuids[$i]}"
         ((i++))
     done
     
     read -p "Enter number of user to delete: " user_number
     
-    if [[ "$user_number" =~ ^[0-9]+$ ]] && [ "$user_number" -ge 1 ] && [ "$user_number" -lt "$i" ]; then
-        local delete_uuid=${ids[$user_number]}
-        local delete_name=${users[$delete_uuid]}
-        unset users[$delete_uuid]
+    if [[ "$user_number" =~ ^[0-9]+$ ]] && [ "$user_number" -ge 1 ] && [ "$user_number" -le "${#user_uuids[@]}" ]; then
+        local delete_index=$((user_number-1))
+        local delete_name="${user_names[$delete_index]}"
+        local delete_uuid="${user_uuids[$delete_index]}"
+        
+        # Remove the user from arrays
+        user_names=("${user_names[@]:0:$delete_index}" "${user_names[@]:$((delete_index+1))}")
+        user_uuids=("${user_uuids[@]:0:$delete_index}" "${user_uuids[@]:$((delete_index+1))}")
+        
         echo -e "${GREEN}User '$delete_name' with UUID '$delete_uuid' deleted.${NC}"
     else
         echo -e "${RED}Invalid selection.${NC}"
@@ -94,24 +97,21 @@ delete_user() {
 # Function to rename a user
 rename_user() {
     echo -e "${YELLOW}Select user to rename:${NC}"
-    local i=1
-    local ids=()
-    
-    for id in "${!users[@]}"; do
-        echo -e "${YELLOW}$i)${NC} ${users[$id]} - ${CYAN}UUID:${NC} ${id}"
-        ids[$i]=$id
+    local i=0
+    while [ $i -lt ${#user_uuids[@]} ]; do
+        echo -e "${YELLOW}$((i+1)))${NC} ${user_names[$i]} - ${CYAN}UUID:${NC} ${user_uuids[$i]}"
         ((i++))
     done
     
     read -p "Enter number of user to rename: " user_number
     
-    if [[ "$user_number" =~ ^[0-9]+$ ]] && [ "$user_number" -ge 1 ] && [ "$user_number" -lt "$i" ]; then
-        local rename_uuid=${ids[$user_number]}
-        read -p "Enter new name for ${users[$rename_uuid]}: " new_name
+    if [[ "$user_number" =~ ^[0-9]+$ ]] && [ "$user_number" -ge 1 ] && [ "$user_number" -le "${#user_uuids[@]}" ]; then
+        local rename_index=$((user_number-1))
+        read -p "Enter new name for ${user_names[$rename_index]}: " new_name
         
-        if [[ -n "$new_name" ]]; then
-            local old_name=${users[$rename_uuid]}
-            users[$rename_uuid]="$new_name"
+        if [ -n "$new_name" ]; then
+            local old_name="${user_names[$rename_index]}"
+            user_names[$rename_index]="$new_name"
             echo -e "${GREEN}User renamed from '$old_name' to '$new_name'.${NC}"
         else
             echo -e "${RED}Name cannot be empty.${NC}"
@@ -175,7 +175,7 @@ configure_firewall() {
     echo -e "${BLUE}Firewall Configuration${NC}"
     
     # Check if UFW is installed
-    if ! command -v ufw &> /dev/null; then
+    if ! command -v ufw > /dev/null 2>&1; then
         echo -e "${YELLOW}UFW not found. Installing...${NC}"
         apt update
         apt install -y ufw
@@ -263,7 +263,7 @@ uninstall_xray() {
     rm -rf /usr/local/etc/xray
     
     echo -e "${BLUE}Removing firewall rules...${NC}"
-    if command -v ufw &> /dev/null; then
+    if command -v ufw > /dev/null 2>&1; then
         ufw delete allow ${server_port}/tcp
     fi
     
@@ -305,27 +305,29 @@ check_updates() {
 }
 
 # === MODIFIED CONFIGURATION FUNCTIONS ===
-# Modified function to create Xray configuration with multiple users and custom fingerprint
+# Modified function to create Xray configuration with multiple users
 create_config() {
     echo -e "${BLUE}Creating Xray configuration file with Fake DNS...${NC}"
     
-    # Start building clients JSON array
-    local clients_json="["
-    local first=true
+    # Build clients array for config
+    local clients_config=""
+    local i=0
     
-    for user_uuid in "${!users[@]}"; do
-        if [ "$first" = true ]; then
-            first=false
-        else
-            clients_json+=","
+    while [ $i -lt ${#user_uuids[@]} ]; do
+        if [ $i -gt 0 ]; then
+            clients_config="${clients_config},"
         fi
         
-        clients_json+=$'\n          {\n            "id": "'$user_uuid'",\n            "flow": "xtls-rprx-vision"\n          }'
+        clients_config="${clients_config}
+          {
+            \"id\": \"${user_uuids[$i]}\",
+            \"flow\": \"xtls-rprx-vision\"
+          }"
+        
+        ((i++))
     done
     
-    clients_json+=$'\n        ]'
-    
-    cat << EOF > /usr/local/etc/xray/config.json
+    cat > /usr/local/etc/xray/config.json << EOF
 {
   "log": {
     "loglevel": "warning"
@@ -353,7 +355,8 @@ create_config() {
       "port": ${server_port},
       "protocol": "vless",
       "settings": {
-        "clients": ${clients_json},
+        "clients": [${clients_config}
+        ],
         "decryption": "none"
       },
       "streamSettings": {
@@ -415,10 +418,12 @@ display_config() {
     echo -e "${CYAN}Public Key: ${NC}${public_key}"
     
     echo -e "${YELLOW}------------- USERS ----------------------${NC}"
-    for user_uuid in "${!users[@]}"; do
-        echo -e "${CYAN}User: ${NC}${users[$user_uuid]}"
-        echo -e "${CYAN}UUID: ${NC}${user_uuid}"
+    local i=0
+    while [ $i -lt ${#user_uuids[@]} ]; do
+        echo -e "${CYAN}User: ${NC}${user_names[$i]}"
+        echo -e "${CYAN}UUID: ${NC}${user_uuids[$i]}"
         echo
+        ((i++))
     done
     
     echo -e "${YELLOW}============================================${NC}"
@@ -494,4 +499,49 @@ main_menu() {
                 ;;
         esac
     done
+}
+
+# Modification to apply_changes function to use the new variables
+apply_changes() {
+    display_banner
+    echo -e "${BLUE}Applying configuration changes...${NC}"
+    
+    if [ -z "$private_key" ] || [ -z "$public_key" ]; then
+        generate_keys
+    fi
+    
+    create_config
+    restart_xray
+    display_config
+    display_status
+    
+    read -p "Press Enter to continue to main menu..."
+}
+
+# Modification to perform_installation function
+perform_installation() {
+    display_banner
+    check_installation
+    
+    if [ "$installed" = false ]; then
+        install_dependencies
+        install_xray
+    fi
+    
+    if [ -z "$private_key" ] || [ -z "$public_key" ]; then
+        generate_keys
+    fi
+    
+    # Initialize user arrays if empty
+    if [ ${#user_uuids[@]} -eq 0 ]; then
+        user_uuids=("$uuid")
+        user_names=("Default User")
+    fi
+    
+    create_config
+    restart_xray
+    display_config
+    display_status
+    
+    read -p "Press Enter to continue to main menu..."
 }
