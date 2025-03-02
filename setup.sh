@@ -1,8 +1,163 @@
 #!/bin/bash
+
+# ================ COLOR DEFINITIONS ================
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[0;33m'
+BLUE='\033[0;34m'
+MAGENTA='\033[0;35m'
+CYAN='\033[0;36m'
+NC='\033[0m' # No Color
+
+# ================ GLOBAL VARIABLES ================
+installed=false
+server_ip=$(curl -s ipv4.icanhazip.com)
+server_port=443
+dest_server="www.microsoft.com"
+uuid=$(cat /proc/sys/kernel/random/uuid)
+private_key=""
+public_key=""
+fingerprint="chrome"
+
 # === MULTIPLE USER SUPPORT ===
-# Variables to store users (compatible with basic bash)
+# Variables to store users (compatible with bash)
 user_uuids=("$uuid")
 user_names=("Default User")
+
+# ================ UTILITY FUNCTIONS ================
+# Function to display a nice banner
+display_banner() {
+    clear
+    echo -e "${BLUE}╔═══════════════════════════════════════════════════╗${NC}"
+    echo -e "${BLUE}║                                                   ║${NC}"
+    echo -e "${BLUE}║${NC}  ${MAGENTA}Xray VLESS + XTLS Reality + FakeDNS Setup Script${NC}  ${BLUE}║${NC}"
+    echo -e "${BLUE}║                                                   ║${NC}"
+    echo -e "${BLUE}╚═══════════════════════════════════════════════════╝${NC}"
+    echo
+}
+
+# Function to check if Xray is already installed
+check_installation() {
+    echo -e "${BLUE}Checking if Xray is already installed...${NC}"
+    if command -v xray > /dev/null 2>&1; then
+        echo -e "${GREEN}Xray is already installed.${NC}"
+        installed=true
+    else
+        echo -e "${YELLOW}Xray is not installed.${NC}"
+        installed=false
+    fi
+}
+
+# Function to install dependencies
+install_dependencies() {
+    echo -e "${BLUE}Installing dependencies...${NC}"
+    apt update
+    apt install -y curl wget unzip jq openssl
+    echo -e "${GREEN}Dependencies installed.${NC}"
+}
+
+# Function to install Xray
+install_xray() {
+    echo -e "${BLUE}Installing Xray...${NC}"
+    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+    echo -e "${GREEN}Xray installed successfully.${NC}"
+    installed=true
+}
+
+# Function to generate Reality keys
+generate_keys() {
+    echo -e "${BLUE}Generating Reality keys...${NC}"
+    local key_output=$(xray x25519)
+    private_key=$(echo "$key_output" | grep "Private key:" | cut -d : -f 2 | tr -d ' ')
+    public_key=$(echo "$key_output" | grep "Public key:" | cut -d : -f 2 | tr -d ' ')
+    echo -e "${GREEN}Keys generated successfully.${NC}"
+    echo -e "${CYAN}Private key: ${NC}${private_key}"
+    echo -e "${CYAN}Public key: ${NC}${public_key}"
+}
+
+# Function to restart Xray
+restart_xray() {
+    echo -e "${BLUE}Restarting Xray service...${NC}"
+    systemctl restart xray
+    echo -e "${GREEN}Xray service restarted.${NC}"
+}
+
+# Function to display Xray service status
+display_status() {
+    echo -e "${YELLOW}========== XRAY SERVICE STATUS ============${NC}"
+    systemctl status xray --no-pager
+    echo -e "${YELLOW}==========================================${NC}"
+}
+
+# Function to change SNI destination
+change_sni() {
+    display_banner
+    echo -e "${CYAN}Current SNI Destination: ${NC}${dest_server}"
+    echo
+    echo -e "${YELLOW}Popular destinations:${NC}"
+    echo -e "1) www.microsoft.com"
+    echo -e "2) www.apple.com"
+    echo -e "3) www.amazon.com"
+    echo -e "4) www.cloudflare.com"
+    echo -e "5) www.google.com"
+    echo -e "6) Custom domain"
+    echo
+    read -p "Enter your choice [1-6]: " sni_choice
+    
+    case $sni_choice in
+        1) dest_server="www.microsoft.com" ;;
+        2) dest_server="www.apple.com" ;;
+        3) dest_server="www.amazon.com" ;;
+        4) dest_server="www.cloudflare.com" ;;
+        5) dest_server="www.google.com" ;;
+        6)
+            read -p "Enter custom domain (without https://): " custom_domain
+            if [ -n "$custom_domain" ]; then
+                dest_server="$custom_domain"
+            else
+                echo -e "${RED}Invalid domain. Using default.${NC}"
+            fi
+            ;;
+        *)
+            echo -e "${RED}Invalid choice. Keeping current setting.${NC}"
+            ;;
+    esac
+    
+    echo -e "${GREEN}SNI Destination set to: ${NC}${dest_server}"
+    read -p "Press Enter to continue..."
+}
+
+# Function to change server port
+change_port() {
+    display_banner
+    echo -e "${CYAN}Current Port: ${NC}${server_port}"
+    echo
+    read -p "Enter new port (1-65535): " new_port
+    
+    if [[ "$new_port" =~ ^[0-9]+$ ]] && [ "$new_port" -ge 1 ] && [ "$new_port" -le 65535 ]; then
+        server_port="$new_port"
+        echo -e "${GREEN}Port set to: ${NC}${server_port}"
+    else
+        echo -e "${RED}Invalid port. Keeping current setting.${NC}"
+    fi
+    
+    read -p "Press Enter to continue..."
+}
+
+# Function to regenerate Reality keys
+regenerate_keys() {
+    display_banner
+    echo -e "${YELLOW}Warning: Regenerating keys will require all clients to update their configurations.${NC}"
+    read -p "Are you sure you want to regenerate keys? (y/n): " confirm
+    
+    if [[ "$confirm" =~ ^[Yy]$ ]]; then
+        generate_keys
+    else
+        echo -e "${GREEN}Key regeneration cancelled.${NC}"
+    fi
+    
+    read -p "Press Enter to continue..."
+}
 
 # Function to manage users
 manage_users() {
@@ -122,10 +277,6 @@ rename_user() {
     fi
 }
 
-# === TLS FINGERPRINT CUSTOMIZATION ===
-# Variable to store the current fingerprint
-fingerprint="chrome"
-
 # Function to change TLS fingerprint
 change_fingerprint() {
     display_banner
@@ -157,7 +308,7 @@ change_fingerprint() {
         8) fingerprint="qq" ;;
         9) fingerprint="random" ;;
         10) return ;;
-        *) 
+        *)
             echo -e "${RED}Invalid choice.${NC}"
             read -p "Press Enter to continue..."
             change_fingerprint
@@ -169,7 +320,6 @@ change_fingerprint() {
     read -p "Press Enter to continue..."
 }
 
-# === FIREWALL CONFIGURATION ===
 # Function to configure firewall (UFW)
 configure_firewall() {
     display_banner
@@ -240,7 +390,6 @@ configure_firewall() {
     configure_firewall
 }
 
-# === UNINSTALL FUNCTION ===
 # Function to uninstall Xray
 uninstall_xray() {
     display_banner
@@ -273,7 +422,6 @@ uninstall_xray() {
     read -p "Press Enter to continue..."
 }
 
-# === UPDATE CHECKER ===
 # Function to check for Xray updates
 check_updates() {
     display_banner
@@ -305,7 +453,6 @@ check_updates() {
     read -p "Press Enter to continue..."
 }
 
-# === MODIFIED CONFIGURATION FUNCTIONS ===
 # Modified function to create Xray configuration with multiple users
 create_config() {
     echo -e "${BLUE}Creating Xray configuration file with Fake DNS...${NC}"
@@ -327,6 +474,9 @@ create_config() {
         
         ((i++))
     done
+    
+    # Create directory if it doesn't exist
+    mkdir -p /usr/local/etc/xray
     
     cat > /usr/local/etc/xray/config.json << EOF
 {
@@ -431,8 +581,52 @@ display_config() {
     echo -e "Use the above info to configure your client (v2rayNG, Nekoray, etc.)"
 }
 
-# === MAIN MENU MODIFICATION ===
-# Updated main menu function with new options
+# Function to apply configuration changes
+apply_changes() {
+    display_banner
+    echo -e "${BLUE}Applying configuration changes...${NC}"
+    
+    if [ -z "$private_key" ] || [ -z "$public_key" ]; then
+        generate_keys
+    fi
+    
+    create_config
+    restart_xray
+    display_config
+    display_status
+    
+    read -p "Press Enter to continue to main menu..."
+}
+
+# Function to perform installation
+perform_installation() {
+    display_banner
+    check_installation
+    
+    if [ "$installed" = false ]; then
+        install_dependencies
+        install_xray
+    fi
+    
+    if [ -z "$private_key" ] || [ -z "$public_key" ]; then
+        generate_keys
+    fi
+    
+    # Initialize user arrays if empty
+    if [ ${#user_uuids[@]} -eq 0 ]; then
+        user_uuids=("$uuid")
+        user_names=("Default User")
+    fi
+    
+    create_config
+    restart_xray
+    display_config
+    display_status
+    
+    read -p "Press Enter to continue to main menu..."
+}
+
+# Main menu function with options
 main_menu() {
     while true; do
         display_banner
@@ -502,47 +696,14 @@ main_menu() {
     done
 }
 
-# Modification to apply_changes function to use the new variables
-apply_changes() {
-    display_banner
-    echo -e "${BLUE}Applying configuration changes...${NC}"
-    
-    if [ -z "$private_key" ] || [ -z "$public_key" ]; then
-        generate_keys
-    fi
-    
-    create_config
-    restart_xray
-    display_config
-    display_status
-    
-    read -p "Press Enter to continue to main menu..."
-}
+# Check if script is run as root
+if [ "$(id -u)" -ne 0 ]; then
+    echo -e "${RED}This script must be run as root!${NC}"
+    exit 1
+fi
 
-# Modification to perform_installation function
-perform_installation() {
-    display_banner
-    check_installation
-    
-    if [ "$installed" = false ]; then
-        install_dependencies
-        install_xray
-    fi
-    
-    if [ -z "$private_key" ] || [ -z "$public_key" ]; then
-        generate_keys
-    fi
-    
-    # Initialize user arrays if empty
-    if [ ${#user_uuids[@]} -eq 0 ]; then
-        user_uuids=("$uuid")
-        user_names=("Default User")
-    fi
-    
-    create_config
-    restart_xray
-    display_config
-    display_status
-    
-    read -p "Press Enter to continue to main menu..."
-}
+# First run checks
+check_installation
+
+# Start the main menu
+main_menu
