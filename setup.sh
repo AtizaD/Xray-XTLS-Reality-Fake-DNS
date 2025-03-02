@@ -11,7 +11,7 @@ NC='\033[0m' # No Color
 
 # ================ GLOBAL VARIABLES ================
 installed=false
-server_ip=$(curl -s ipv4.icanhazip.com)
+server_ip=""
 server_port=443
 dest_server="www.microsoft.com"
 uuid=$(cat /proc/sys/kernel/random/uuid)
@@ -20,6 +20,8 @@ public_key=""
 fingerprint="chrome"
 use_fake_dns=true
 short_id=$(openssl rand -hex 8)  # Generate random 8-byte shortID
+config_file="/usr/local/etc/xray/config.json"
+script_version="1.0.0"
 
 # === MULTIPLE USER SUPPORT ===
 # Variables to store users (compatible with bash)
@@ -27,12 +29,96 @@ user_uuids=("$uuid")
 user_names=("Default User")
 
 # ================ UTILITY FUNCTIONS ================
+# Function to check if script is run as root
+check_root() {
+    if [ $(id -u) -ne 0 ]; then
+        echo -e "${RED}Error: This script must be run as root!${NC}"
+        exit 1
+    fi
+}
+
+# Function to safely execute commands and handle errors
+safe_exec() {
+    local cmd="$1"
+    local err_msg="${2:-Command failed}"
+    local output=""
+    
+    output=$(eval "$cmd" 2>&1) || {
+        echo -e "${RED}Error: $err_msg${NC}"
+        echo -e "${RED}Command: $cmd${NC}"
+        echo -e "${RED}Output: $output${NC}"
+        return 1
+    }
+    
+    return 0
+}
+
+# Function to safely download files
+safe_download() {
+    local url="$1"
+    local output_file="$2"
+    local err_msg="${3:-Download failed}"
+    
+    # Check if curl is installed
+    if ! command -v curl > /dev/null 2>&1; then
+        safe_exec "apt update && apt install -y curl" "Failed to install curl"
+    fi
+    
+    # Download with curl and check signature if available
+    safe_exec "curl -sSL '$url' -o '$output_file'" "$err_msg"
+    
+    # Verify file was downloaded
+    if [ ! -s "$output_file" ]; then
+        echo -e "${RED}Error: Downloaded file is empty${NC}"
+        return 1
+    fi
+    
+    return 0
+}
+
+# Function to sanitize inputs to prevent command injection
+sanitize_input() {
+    local input="$1"
+    echo "$input" | tr -cd '[:alnum:]._-'
+}
+
+# Function to get server IP using multiple services
+get_server_ip() {
+    local ip=""
+    local services=(
+        "ipv4.icanhazip.com"
+        "ifconfig.me"
+        "api.ipify.org"
+    )
+    
+    # Try each service until we get a valid IP
+    for service in "${services[@]}"; do
+        ip=$(curl -s --connect-timeout 5 "$service")
+        
+        # Validate IP format
+        if [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+            server_ip="$ip"
+            return 0
+        fi
+    done
+    
+    # If all online services fail, try to get from interface
+    ip=$(ip -4 addr show | grep -oP '(?<=inet\s)\d+(\.\d+){3}' | grep -v '127.0.0.1' | head -n 1)
+    if [[ $ip =~ ^[0-9]+\.[0-9]+\.[0-9]+\.[0-9]+$ ]]; then
+        server_ip="$ip"
+        return 0
+    fi
+    
+    echo -e "${RED}Error: Could not determine server IP address.${NC}"
+    return 1
+}
+
 # Function to display a nice banner
 display_banner() {
     clear
     echo -e "${BLUE}╔═══════════════════════════════════════════════════╗${NC}"
     echo -e "${BLUE}║                                                   ║${NC}"
-    echo -e "${BLUE}║${NC}  ${MAGENTA}Xray VLESS + XTLS Reality Setup Script${NC}  ${BLUE}║${NC}"
+    echo -e "${BLUE}║${NC}  ${MAGENTA}Xray VLESS + XTLS Reality Setup Script v$script_version${NC}  ${BLUE}║${NC}"
     echo -e "${BLUE}║                                                   ║${NC}"
     echo -e "${BLUE}╚═══════════════════════════════════════════════════╝${NC}"
     echo
@@ -46,7 +132,7 @@ check_installation() {
         installed=true
         
         # If installed, try to read existing config to get current values
-        if [ -f "/usr/local/etc/xray/config.json" ]; then
+        if [ -f "$config_file" ]; then
             read_existing_config
         fi
     else
@@ -57,61 +143,62 @@ check_installation() {
 
 # Function to read existing configuration
 read_existing_config() {
-    if command -v jq > /dev/null 2>&1; then
-        if [ -f "/usr/local/etc/xray/config.json" ]; then
-            # Try to extract values from config
-            local config_file="/usr/local/etc/xray/config.json"
-            
-            # Extract port
-            local config_port=$(jq -r '.inbounds[0].port' "$config_file" 2>/dev/null)
-            if [ ! -z "$config_port" ] && [ "$config_port" != "null" ]; then
-                server_port=$config_port
+    if ! command -v jq > /dev/null 2>&1; then
+        safe_exec "apt update && apt install -y jq" "Failed to install jq"
+    fi
+    
+    if [ -f "$config_file" ]; then
+        # Try to extract values from config
+        
+        # Extract port
+        local config_port=$(jq -r '.inbounds[0].port' "$config_file" 2>/dev/null)
+        if [ ! -z "$config_port" ] && [ "$config_port" != "null" ]; then
+            server_port=$config_port
+        fi
+        
+        # Extract destination
+        local config_dest=$(jq -r '.inbounds[0].streamSettings.realitySettings.dest' "$config_file" 2>/dev/null | cut -d':' -f1)
+        if [ ! -z "$config_dest" ] && [ "$config_dest" != "null" ]; then
+            dest_server=$config_dest
+        fi
+        
+        # Extract private key
+        local config_private_key=$(jq -r '.inbounds[0].streamSettings.realitySettings.privateKey' "$config_file" 2>/dev/null)
+        if [ ! -z "$config_private_key" ] && [ "$config_private_key" != "null" ]; then
+            private_key=$config_private_key
+            # Generate public key from private key if possible
+            if command -v xray > /dev/null 2>&1; then
+                public_key=$(echo $private_key | xray x25519 -i)
             fi
+        fi
+        
+        # Extract shortId
+        local config_short_id=$(jq -r '.inbounds[0].streamSettings.realitySettings.shortIds[0]' "$config_file" 2>/dev/null)
+        if [ ! -z "$config_short_id" ] && [ "$config_short_id" != "null" ] && [ "$config_short_id" != "" ]; then
+            short_id=$config_short_id
+        fi
+        
+        # Check if using FakeDNS
+        if jq -e '.dns.fakeIP.enabled' "$config_file" > /dev/null 2>&1; then
+            use_fake_dns=true
+        else
+            use_fake_dns=false
+        fi
+        
+        # Extract UUIDs and try to match with user names from current config
+        local uuids=$(jq -r '.inbounds[0].settings.clients[].id' "$config_file" 2>/dev/null)
+        if [ ! -z "$uuids" ]; then
+            # Clear the current arrays to rebuild them
+            user_uuids=()
+            user_names=()
             
-            # Extract destination
-            local config_dest=$(jq -r '.inbounds[0].streamSettings.realitySettings.dest' "$config_file" 2>/dev/null | cut -d':' -f1)
-            if [ ! -z "$config_dest" ] && [ "$config_dest" != "null" ]; then
-                dest_server=$config_dest
-            fi
-            
-            # Extract private key
-            local config_private_key=$(jq -r '.inbounds[0].streamSettings.realitySettings.privateKey' "$config_file" 2>/dev/null)
-            if [ ! -z "$config_private_key" ] && [ "$config_private_key" != "null" ]; then
-                private_key=$config_private_key
-                # Generate public key from private key if possible
-                if command -v xray > /dev/null 2>&1; then
-                    public_key=$(echo $private_key | xray x25519 -i)
-                fi
-            fi
-            
-            # Extract shortId
-            local config_short_id=$(jq -r '.inbounds[0].streamSettings.realitySettings.shortIds[0]' "$config_file" 2>/dev/null)
-            if [ ! -z "$config_short_id" ] && [ "$config_short_id" != "null" ] && [ "$config_short_id" != "" ]; then
-                short_id=$config_short_id
-            fi
-            
-            # Check if using FakeDNS
-            if jq -e '.dns.fakeIP.enabled' "$config_file" > /dev/null 2>&1; then
-                use_fake_dns=true
-            else
-                use_fake_dns=false
-            fi
-            
-            # Extract UUIDs and try to match with user names from current config
-            local uuids=$(jq -r '.inbounds[0].settings.clients[].id' "$config_file" 2>/dev/null)
-            if [ ! -z "$uuids" ]; then
-                # Clear the current arrays to rebuild them
-                user_uuids=()
-                user_names=()
-                
-                # For each UUID in the config
-                local i=0
-                while read -r line; do
-                    user_uuids+=("$line")
-                    user_names+=("User-$i")  # Default name format
-                    ((i++))
-                done <<< "$uuids"
-            fi
+            # For each UUID in the config
+            local i=0
+            while read -r line; do
+                user_uuids+=("$line")
+                user_names+=("User-$i")  # Default name format
+                ((i++))
+            done <<< "$uuids"
         fi
     fi
 }
@@ -119,15 +206,28 @@ read_existing_config() {
 # Function to install dependencies
 install_dependencies() {
     echo -e "${BLUE}Installing dependencies...${NC}"
-    apt update
-    apt install -y curl wget unzip jq openssl net-tools
+    safe_exec "apt update" "Failed to update package lists"
+    safe_exec "apt install -y curl wget unzip jq openssl net-tools" "Failed to install dependencies"
     echo -e "${GREEN}Dependencies installed.${NC}"
 }
 
 # Function to install Xray
 install_xray() {
     echo -e "${BLUE}Installing Xray...${NC}"
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
+    
+    # Download the installation script to a temporary file
+    local tmp_script=$(mktemp)
+    safe_download "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" "$tmp_script" "Failed to download Xray installation script"
+    
+    # Make the script executable
+    chmod +x "$tmp_script"
+    
+    # Execute the script
+    safe_exec "$tmp_script install" "Failed to install Xray"
+    
+    # Clean up
+    rm -f "$tmp_script"
+    
     echo -e "${GREEN}Xray installed successfully.${NC}"
     installed=true
 }
@@ -153,7 +253,7 @@ generate_short_id() {
 # Function to restart Xray
 restart_xray() {
     echo -e "${BLUE}Restarting Xray service...${NC}"
-    systemctl restart xray
+    safe_exec "systemctl restart xray" "Failed to restart Xray service"
     
     # Check if restart was successful
     if systemctl is-active --quiet xray; then
@@ -206,7 +306,14 @@ change_sni() {
         10)
             read -p "Enter custom domain (without https://): " custom_domain
             if [ -n "$custom_domain" ]; then
-                dest_server="$custom_domain"
+                # Sanitize input to prevent command injection
+                custom_domain=$(sanitize_input "$custom_domain")
+                # Validate domain format
+                if [[ "$custom_domain" =~ ^[a-zA-Z0-9][a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$ ]]; then
+                    dest_server="$custom_domain"
+                else
+                    echo -e "${RED}Invalid domain format. Using default.${NC}"
+                fi
             else
                 echo -e "${RED}Invalid domain. Using default.${NC}"
             fi
@@ -378,6 +485,9 @@ add_user() {
     
     if [ -z "$user_name" ]; then
         user_name="User-$(date +%s)"
+    else
+        # Sanitize username
+        user_name=$(sanitize_input "$user_name")
     fi
     
     user_uuids+=("$new_uuid")
@@ -408,9 +518,21 @@ delete_user() {
         local delete_name="${user_names[$delete_index]}"
         local delete_uuid="${user_uuids[$delete_index]}"
         
-        # Remove the user from arrays
-        user_names=("${user_names[@]:0:$delete_index}" "${user_names[@]:$((delete_index+1))}")
-        user_uuids=("${user_uuids[@]:0:$delete_index}" "${user_uuids[@]:$((delete_index+1))}")
+        # Create temporary arrays
+        local temp_names=()
+        local temp_uuids=()
+        
+        # Copy all elements except the one to delete
+        for i in "${!user_names[@]}"; do
+            if [ "$i" -ne "$delete_index" ]; then
+                temp_names+=("${user_names[$i]}")
+                temp_uuids+=("${user_uuids[$i]}")
+            fi
+        done
+        
+        # Replace original arrays
+        user_names=("${temp_names[@]}")
+        user_uuids=("${temp_uuids[@]}")
         
         echo -e "${GREEN}User '$delete_name' with UUID '$delete_uuid' deleted.${NC}"
     else
@@ -434,6 +556,8 @@ rename_user() {
         read -p "Enter new name for ${user_names[$rename_index]}: " new_name
         
         if [ -n "$new_name" ]; then
+            # Sanitize new name
+            new_name=$(sanitize_input "$new_name")
             local old_name="${user_names[$rename_index]}"
             user_names[$rename_index]="$new_name"
             echo -e "${GREEN}User renamed from '$old_name' to '$new_name'.${NC}"
@@ -496,8 +620,7 @@ configure_firewall() {
     # Check if UFW is installed
     if ! command -v ufw > /dev/null 2>&1; then
         echo -e "${YELLOW}UFW not found. Installing...${NC}"
-        apt update
-        apt install -y ufw
+        safe_exec "apt update && apt install -y ufw" "Failed to install UFW"
     fi
     
     # Check UFW status
@@ -518,8 +641,8 @@ configure_firewall() {
     case $fw_choice in
         1)
             echo -e "${BLUE}Configuring UFW for Xray port ${server_port}...${NC}"
-            ufw allow ssh comment 'SSH access'
-            ufw allow ${server_port}/tcp comment 'Xray VLESS'
+            safe_exec "ufw allow ssh comment 'SSH access'" "Failed to add SSH rule"
+            safe_exec "ufw allow ${server_port}/tcp comment 'Xray VLESS'" "Failed to add Xray port rule"
             echo -e "${GREEN}Firewall rules added for port ${server_port}.${NC}"
             ;;
         2)
@@ -527,8 +650,8 @@ configure_firewall() {
                 echo -e "${YELLOW}Warning: This might disconnect your SSH session if port 22 is not allowed.${NC}"
                 read -p "Are you sure you want to enable UFW? (y/n): " confirm
                 if [[ "$confirm" =~ ^[Yy]$ ]]; then
-                    ufw allow ssh comment 'SSH access'
-                    ufw --force enable
+                    safe_exec "ufw allow ssh comment 'SSH access'" "Failed to add SSH rule"
+                    safe_exec "ufw --force enable" "Failed to enable UFW"
                     echo -e "${GREEN}UFW enabled.${NC}"
                 fi
             else
@@ -537,7 +660,7 @@ configure_firewall() {
             ;;
         3)
             if [ "$ufw_status" = "active" ]; then
-                ufw disable
+                safe_exec "ufw disable" "Failed to disable UFW"
                 echo -e "${GREEN}UFW disabled.${NC}"
             else
                 echo -e "${YELLOW}UFW is already disabled.${NC}"
@@ -571,11 +694,22 @@ uninstall_xray() {
     fi
     
     echo -e "${BLUE}Stopping Xray service...${NC}"
-    systemctl stop xray
-    systemctl disable xray
+    safe_exec "systemctl stop xray" "Failed to stop Xray service"
+    safe_exec "systemctl disable xray" "Failed to disable Xray service"
     
     echo -e "${BLUE}Removing Xray files...${NC}"
-    bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ remove
+    # Download the uninstallation script to a temporary file
+    local tmp_script=$(mktemp)
+    safe_download "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" "$tmp_script" "Failed to download Xray uninstallation script"
+    
+    # Make the script executable
+    chmod +x "$tmp_script"
+    
+    # Execute the script with the remove argument
+    safe_exec "$tmp_script remove" "Failed to uninstall Xray"
+    
+    # Clean up
+    rm -f "$tmp_script"
     
     echo -e "${BLUE}Removing configuration files...${NC}"
     rm -rf /usr/local/etc/xray
@@ -598,8 +732,22 @@ check_updates() {
     # Get current installed version
     current_version=$(xray -version | head -n1 | cut -d ' ' -f2)
     
-    # Get latest version from GitHub
-    latest_version=$(curl -s https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+    # Get latest version from GitHub using API
+    local tmp_json=$(mktemp)
+    if safe_download "https://api.github.com/repos/XTLS/Xray-core/releases/latest" "$tmp_json" "Failed to check for updates"; then
+        latest_version=$(jq -r '.tag_name' "$tmp_json" 2>/dev/null)
+        rm -f "$tmp_json"
+        
+        if [ -z "$latest_version" ] || [ "$latest_version" = "null" ]; then
+            echo -e "${RED}Failed to get latest version information.${NC}"
+            read -p "Press Enter to continue..."
+            return
+        fi
+    else
+        echo -e "${RED}Failed to check for updates.${NC}"
+        read -p "Press Enter to continue..."
+        return
+    fi
     
     echo -e "${CYAN}Current version: ${NC}${current_version}"
     echo -e "${CYAN}Latest version: ${NC}${latest_version}"
@@ -608,432 +756,488 @@ check_updates() {
         echo -e "${GREEN}You have the latest version of Xray installed.${NC}"
     else
         echo -e "${YELLOW}A new version of Xray is available.${NC}"
-        read -p "Do you want to update? (y/n): " update_choice
+        read -p "Do you want to update now? (y/n): " update_confirm
         
-        if [[ "$update_choice" =~ ^[Yy]$ ]]; then
+        if [[ "$update_confirm" =~ ^[Yy]$ ]]; then
             echo -e "${BLUE}Updating Xray...${NC}"
-            bash -c "$(curl -L https://github.com/XTLS/Xray-install/raw/main/install-release.sh)" @ install
-            echo -e "${GREEN}Xray updated successfully.${NC}"
+            
+            # Download the installation script to a temporary file
+            local tmp_script=$(mktemp)
+            safe_download "https://github.com/XTLS/Xray-install/raw/main/install-release.sh" "$tmp_script" "Failed to download Xray installation script"
+            
+            # Make the script executable
+            chmod +x "$tmp_script"
+            
+            # Execute the script to update
+            safe_exec "$tmp_script" "Failed to update Xray"
+            
+            # Clean up
+            rm -f "$tmp_script"
+            
+            echo -e "${GREEN}Xray updated successfully to version ${latest_version}.${NC}"
+            
+            # Restart Xray
             restart_xray
+        else
+            echo -e "${YELLOW}Update cancelled.${NC}"
         fi
     fi
     
     read -p "Press Enter to continue..."
 }
 
-# Modified function to create Xray configuration with FakeDNS option
+# Function to create config file
 create_config() {
-    echo -e "${BLUE}Creating Xray configuration file...${NC}"
+    echo -e "${BLUE}Creating Xray configuration...${NC}"
     
-    # Build clients array for config
-    local clients_config=""
+    # Make sure the config directory exists
+    mkdir -p /usr/local/etc/xray
+    
+    # Prepare client objects for JSON
+    local client_objects=""
     local i=0
     
+    # Loop through all users to create client entries
     while [ $i -lt ${#user_uuids[@]} ]; do
         if [ $i -gt 0 ]; then
-            clients_config="${clients_config},"
+            client_objects="${client_objects},"
         fi
         
-        clients_config="${clients_config}
-          {
-            \"id\": \"${user_uuids[$i]}\",
-            \"flow\": \"xtls-rprx-vision\"
-          }"
+        client_objects="${client_objects}
+                {
+                    \"id\": \"${user_uuids[$i]}\",
+                    \"flow\": \"xtls-rprx-vision\",
+                    \"email\": \"${user_names[$i]}@example.com\"
+                }"
         
         ((i++))
     done
     
-    # Create directory if it doesn't exist
-    mkdir -p /usr/local/etc/xray
-    
-    # Create config based on selected DNS mode
+    # Create FakeDNS or standard DNS config based on setting
+    local dns_config=""
     if [ "$use_fake_dns" = true ]; then
-        # FakeDNS config
-        cat > /usr/local/etc/xray/config.json << EOF
-{
-  "log": {
-    "loglevel": "warning"
-  },
-  "dns": {
-    "servers": [
-      {
-        "address": "https+local://1.1.1.1/dns-query",
-        "domains": ["geosite:geolocation-!cn"]
-      },
-      {
-        "address": "8.8.8.8",
-        "domains": ["geosite:geolocation-!cn"]
-      }
-    ],
-    "fakeIP": {
-      "enabled": true,
-      "ipPool": "198.18.0.0/16",
-      "strategy": "use_ip"
-    }
-  },
-  "inbounds": [
-    {
-      "listen": "0.0.0.0",
-      "port": ${server_port},
-      "protocol": "vless",
-      "settings": {
-        "clients": [${clients_config}
+        # FakeDNS configuration
+        dns_config='"dns": {
+        "servers": [
+            "8.8.8.8",
+            "1.1.1.1",
+            "localhost"
         ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "${dest_server}:443",
-          "xver": 0,
-          "serverNames": [
-            "${dest_server}",
-            "web.${dest_server}"
-          ],
-          "privateKey": "${private_key}",
-          "shortIds": ["${short_id}"]
+        "fakeIP": {
+            "enabled": true,
+            "ipPool": "198.18.0.0/16",
+            "ipPoolV6": "fc00::/18"
         }
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct",
-      "settings": {
-        "domainStrategy": "UseIP"
-      }
-    },
-    {
-      "protocol": "blackhole",
-      "tag": "blocked"
-    }
-  ],
-  "routing": {
-    "domainStrategy": "IPIfNonMatch",
-    "rules": [
-      {
-        "type": "field",
-        "ip": ["geoip:private", "geoip:cn"],
-        "outboundTag": "blocked"
-      }
-    ]
-  }
-}
-EOF
+    },'
     else
-        # Standard config
-        cat > /usr/local/etc/xray/config.json << EOF
+        # Standard DNS configuration
+        dns_config='"dns": {
+        "servers": [
+            "8.8.8.8",
+            "1.1.1.1",
+            "localhost"
+        ]
+    },'
+    fi
+    
+    # Create the full config
+    cat > "$config_file" << EOF
 {
-  "log": {
-    "loglevel": "warning"
-  },
-  "dns": {
-    "servers": [
-      "https+local://1.1.1.1/dns-query",
-      "8.8.8.8",
-      "1.1.1.1"
-    ]
-  },
-  "inbounds": [
-    {
-      "listen": "0.0.0.0",
-      "port": ${server_port},
-      "protocol": "vless",
-      "settings": {
-        "clients": [${clients_config}
-        ],
-        "decryption": "none"
-      },
-      "streamSettings": {
-        "network": "tcp",
-        "security": "reality",
-        "realitySettings": {
-          "show": false,
-          "dest": "${dest_server}:443",
-          "xver": 0,
-          "serverNames": [
-            "${dest_server}",
-            "web.${dest_server}"
-          ],
-          "privateKey": "${private_key}",
-          "shortIds": ["${short_id}"]
-        }
-      }
-    }
-  ],
-  "outbounds": [
-    {
-      "protocol": "freedom",
-      "tag": "direct",
-      "settings": {
-        "domainStrategy": "UseIP"
-      }
+    ${dns_config}
+    "log": {
+        "loglevel": "warning"
     },
-    {
-      "protocol": "blackhole",
-      "tag": "blocked"
-    }
-  ],
-  "routing": {
-    "domainStrategy": "AsIs",
-    "rules": [
-      {
-        "type": "field",
-        "ip": ["geoip:private", "geoip:cn"],
-        "outboundTag": "blocked"
-      }
+    "routing": {
+        "domainStrategy": "AsIs",
+        "rules": []
+    },
+    "inbounds": [
+        {
+            "port": ${server_port},
+            "protocol": "vless",
+            "settings": {
+                "clients": [${client_objects}
+                ],
+                "decryption": "none"
+            },
+            "streamSettings": {
+                "network": "tcp",
+                "security": "reality",
+                "realitySettings": {
+                    "show": false,
+                    "dest": "${dest_server}:443",
+                    "xver": 0,
+                    "serverNames": [
+                        "${dest_server}"
+                    ],
+                    "privateKey": "${private_key}",
+                    "minClientVer": "",
+                    "maxClientVer": "",
+                    "maxTimeDiff": 0,
+                    "shortIds": [
+                        "${short_id}"
+                    ]
+                }
+            },
+            "sniffing": {
+                "enabled": true,
+                "destOverride": [
+                    "http",
+                    "tls",
+                    "quic"
+                ]
+            }
+        }
+    ],
+    "outbounds": [
+        {
+            "protocol": "freedom",
+            "tag": "direct"
+        },
+        {
+            "protocol": "blackhole",
+            "tag": "block"
+        }
     ]
-  }
 }
 EOF
-    fi
-    echo -e "${GREEN}Configuration file created at /usr/local/etc/xray/config.json${NC}"
+    
+    echo -e "${GREEN}Configuration file created at ${config_file}${NC}"
+    
+    # Set proper permissions
+    chmod 644 "$config_file"
 }
 
-# Function to generate client configuration
-generate_client_config() {
+# Function to generate client configs
+generate_client_configs() {
     display_banner
-    echo -e "${BLUE}Client Configuration${NC}"
     
-    # Display all users to select from
-    echo -e "${YELLOW}Select user to generate configuration for:${NC}"
+    # Check for IP first
+    if [ -z "$server_ip" ]; then
+        get_server_ip
+    fi
+    
+    # Prompt for user selection
+    echo -e "${CYAN}Select user to generate config for:${NC}"
     local i=0
     while [ $i -lt ${#user_uuids[@]} ]; do
         echo -e "${YELLOW}$((i+1)))${NC} ${user_names[$i]}"
         ((i++))
     done
     
-    read -p "Enter user number: " user_number
+    echo -e "${YELLOW}a)${NC} Generate for all users"
+    echo -e "${YELLOW}b)${NC} Back to main menu"
+    echo
     
-    if [[ "$user_number" =~ ^[0-9]+$ ]] && [ "$user_number" -ge 1 ] && [ "$user_number" -le "${#user_uuids[@]}" ]; then
-        local user_index=$((user_number-1))
-        local user_uuid="${user_uuids[$user_index]}"
-        local user_name="${user_names[$user_index]}"
-        
-        # Create share link
-        local vless_link="vless://${user_uuid}@${server_ip}:${server_port}?security=reality&encryption=none&pbk=${public_key}&headerType=none&fp=${fingerprint}&type=tcp&flow=xtls-rprx-vision&sni=${dest_server}&sid=${short_id}#${user_name}-Reality"
-        
-        # Display configurations
-        echo -e "${GREEN}VLESS-Reality Configuration for ${user_name}:${NC}"
-        echo -e "${CYAN}Address:${NC} ${server_ip}"
-        echo -e "${CYAN}Port:${NC} ${server_port}"
-        echo -e "${CYAN}UUID:${NC} ${user_uuid}"
-        echo -e "${CYAN}SNI:${NC} ${dest_server}"
-        echo -e "${CYAN}Public Key:${NC} ${public_key}"
-        echo -e "${CYAN}ShortID:${NC} ${short_id}"
-        echo -e "${CYAN}Fingerprint:${NC} ${fingerprint}"
-        echo -e "${CYAN}Flow:${NC} xtls-rprx-vision"
-        echo
-        echo -e "${CYAN}Share Link:${NC}"
-        echo -e "${vless_link}"
-        
-        # Generate QR code for the link if qrencode is installed
-        if command -v qrencode > /dev/null 2>&1; then
-            echo -e "${YELLOW}QR Code:${NC}"
-            qrencode -t ANSIUTF8 "${vless_link}"
-        else
-            echo -e "${YELLOW}Install qrencode for QR code display:${NC} apt install qrencode"
-        fi
-        
-        # Save to file option
-        echo
-        read -p "Save config to file? (y/n): " save_choice
-        if [[ "$save_choice" =~ ^[Yy]$ ]]; then
-            mkdir -p /root/vless_configs
-            config_file="/root/vless_configs/${user_name}-config.txt"
-            
-            cat > "${config_file}" << EOF
-==== ${user_name} VLESS-Reality Configuration ====
-Address: ${server_ip}
-Port: ${server_port}
-UUID: ${user_uuid}
-SNI: ${dest_server}
-Public Key: ${public_key}
-ShortID: ${short_id}
-Fingerprint: ${fingerprint}
-Flow: xtls-rprx-vision
-
-Share Link:
-${vless_link}
-EOF
-            echo -e "${GREEN}Configuration saved to ${config_file}${NC}"
-        fi
+    read -p "Enter your choice: " user_choice
+    
+    if [ "$user_choice" = "b" ]; then
+        return
+    elif [ "$user_choice" = "a" ]; then
+        # Generate for all users
+        local i=0
+        while [ $i -lt ${#user_uuids[@]} ]; do
+            generate_single_config $i
+            ((i++))
+        done
+    elif [[ "$user_choice" =~ ^[0-9]+$ ]] && [ "$user_choice" -ge 1 ] && [ "$user_choice" -le "${#user_uuids[@]}" ]; then
+        # Generate for selected user
+        generate_single_config $((user_choice-1))
     else
-        echo -e "${RED}Invalid selection.${NC}"
+        echo -e "${RED}Invalid choice.${NC}"
+        read -p "Press Enter to continue..."
+        generate_client_configs
+        return
     fi
     
     read -p "Press Enter to continue..."
 }
 
-# Function to display main menu
-main_menu() {
+# Function to generate config for a single user
+generate_single_config() {
+    local index=$1
+    local user_uuid="${user_uuids[$index]}"
+    local user_name="${user_names[$index]}"
+    
+    echo -e "${BLUE}Generating configuration for user: ${user_name}${NC}"
+    
+    # Create client configuration strings
+    
+    # 1. Xray URL for v2rayN
+    local xray_url="vless://${user_uuid}@${server_ip}:${server_port}?encryption=none&flow=xtls-rprx-vision&security=reality&sni=${dest_server}&fp=${fingerprint}&pbk=${public_key}&sid=${short_id}&type=tcp&headerType=none#Xray-REALITY-${user_name}"
+    
+    # 2. Clash Meta configuration
+    local clash_config="- name: Xray-REALITY-${user_name}
+  type: vless
+  server: ${server_ip}
+  port: ${server_port}
+  uuid: ${user_uuid}
+  network: tcp
+  tls: true
+  udp: true
+  flow: xtls-rprx-vision
+  servername: ${dest_server}
+  reality-opts:
+    public-key: ${public_key}
+    short-id: ${short_id}
+  client-fingerprint: ${fingerprint}"
+    
+    # 3. Sing-Box configuration
+    local singbox_config='{
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "Xray-REALITY-'${user_name}'",
+      "server": "'${server_ip}'",
+      "server_port": '${server_port}',
+      "uuid": "'${user_uuid}'",
+      "flow": "xtls-rprx-vision",
+      "tls": {
+        "enabled": true,
+        "server_name": "'${dest_server}'",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "'${fingerprint}'"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "'${public_key}'",
+          "short_id": "'${short_id}'"
+        }
+      }
+    }
+  ]
+}'
+    
+    # Display configurations
+    echo -e "${CYAN}====================== XRAY CLIENT CONFIGURATION ======================${NC}"
+    echo -e "${YELLOW}User:${NC} ${user_name}"
+    echo -e "${YELLOW}UUID:${NC} ${user_uuid}"
+    echo -e "${YELLOW}Server:${NC} ${server_ip}:${server_port}"
+    echo -e "${YELLOW}SNI:${NC} ${dest_server}"
+    echo -e "${YELLOW}Public Key:${NC} ${public_key}"
+    echo -e "${YELLOW}ShortID:${NC} ${short_id}"
+    echo -e "${YELLOW}Fingerprint:${NC} ${fingerprint}"
+    echo
+    
+    # URL for v2rayN, NekoBox, etc.
+    echo -e "${CYAN}=== URL for v2rayN, NekoBox, v2rayNG, etc ===${NC}"
+    echo -e "${xray_url}"
+    echo
+    
+    # Clash Meta config
+    echo -e "${CYAN}=== Clash Meta Configuration ===${NC}"
+    echo -e "${clash_config}"
+    echo
+    
+    # Sing-Box config
+    echo -e "${CYAN}=== Sing-Box Configuration ===${NC}"
+    echo -e "${singbox_config}"
+    echo
+    
+    # QR Code (if qrencode is installed)
+    if command -v qrencode > /dev/null 2>&1; then
+        echo -e "${CYAN}=== QR Code ===${NC}"
+        qrencode -t ANSIUTF8 -o - "${xray_url}"
+        echo
+    else
+        echo -e "${YELLOW}QR code generation skipped (qrencode not installed).${NC}"
+        echo -e "${YELLOW}Install with: apt install qrencode${NC}"
+        echo
+    fi
+    
+    # Save configurations to files
+    local config_dir="/root/xray_configs/${user_name}"
+    mkdir -p "$config_dir"
+    
+    echo "$xray_url" > "${config_dir}/url.txt"
+    echo "$clash_config" > "${config_dir}/clash.yaml"
+    echo "$singbox_config" > "${config_dir}/singbox.json"
+    
+    echo -e "${GREEN}Configuration saved to ${config_dir}${NC}"
+}
+
+# Main setup function
+setup_xray() {
+    display_banner
+    
+    # Check root
+    check_root
+    
+    # Check if Xray is already installed
+    check_installation
+    
+    # Get server IP
+    get_server_ip
+    echo -e "${CYAN}Server IP: ${NC}${server_ip}"
+    
+    # Install dependencies
+    install_dependencies
+    
+    # Install Xray if not already installed
+    if [ "$installed" = false ]; then
+        install_xray
+    fi
+    
+    # Generate keys if needed
+    if [ -z "$private_key" ] || [ -z "$public_key" ]; then
+        generate_keys
+    fi
+    
+    # Create config
+    create_config
+    
+    # Restart Xray
+    restart_xray
+    
+    # Generate client configuration
+    generate_client_configs
+}
+
+# Function to show main menu
+show_menu() {
     while true; do
         display_banner
-        
-        if [ "$installed" = false ]; then
-            echo -e "${YELLOW}Xray is not installed. Some options will not be available.${NC}"
-            echo
-        else
-            echo -e "${GREEN}Xray is installed and running.${NC}"
-            echo -e "${CYAN}Current Configuration:${NC}"
-            echo -e "  ${YELLOW}Server:${NC} ${server_ip}:${server_port}"
-            echo -e "  ${YELLOW}SNI:${NC} ${dest_server}"
-            echo -e "  ${YELLOW}DNS Mode:${NC} $(if [ "$use_fake_dns" = true ]; then echo -e "FakeDNS"; else echo -e "Standard DNS"; fi)"
-            echo -e "  ${YELLOW}Users:${NC} ${#user_uuids[@]}"
-            echo
-        fi
-        
-        echo -e "${BLUE}╔════════════════ MENU ════════════════╗${NC}"
-        
-        if [ "$installed" = false ]; then
-            echo -e "${BLUE}║${NC} ${YELLOW}1)${NC} Install Xray with Reality          ${BLUE}║${NC}"
-        else
-            echo -e "${BLUE}║${NC} ${YELLOW}1)${NC} Update Configuration               ${BLUE}║${NC}"
-        fi
-        
-        echo -e "${BLUE}║${NC} ${YELLOW}2)${NC} Change SNI Destination             ${BLUE}║${NC}"
-        echo -e "${BLUE}║${NC} ${YELLOW}3)${NC} Change Server Port                 ${BLUE}║${NC}"
-        echo -e "${BLUE}║${NC} ${YELLOW}4)${NC} Toggle FakeDNS/Standard DNS        ${BLUE}║${NC}"
-        echo -e "${BLUE}║${NC} ${YELLOW}5)${NC} Manage ShortID                     ${BLUE}║${NC}"
+        echo -e "${CYAN}Server IP: ${NC}${server_ip}"
+        echo -e "${CYAN}Installation Status: ${NC}$(if [ "$installed" = true ]; then echo -e "${GREEN}Installed${NC}"; else echo -e "${RED}Not Installed${NC}"; fi)"
         
         if [ "$installed" = true ]; then
-            echo -e "${BLUE}║${NC} ${YELLOW}6)${NC} Regenerate Reality Keys            ${BLUE}║${NC}"
-            echo -e "${BLUE}║${NC} ${YELLOW}7)${NC} Generate Client Configuration      ${BLUE}║${NC}"
-            echo -e "${BLUE}║${NC} ${YELLOW}8)${NC} Manage Users                       ${BLUE}║${NC}"
-            echo -e "${BLUE}║${NC} ${YELLOW}9)${NC} Change TLS Fingerprint             ${BLUE}║${NC}"
-            echo -e "${BLUE}║${NC} ${YELLOW}10)${NC} Configure Firewall                ${BLUE}║${NC}"
-            echo -e "${BLUE}║${NC} ${YELLOW}11)${NC} View Xray Status                  ${BLUE}║${NC}"
-            echo -e "${BLUE}║${NC} ${YELLOW}12)${NC} Restart Xray                      ${BLUE}║${NC}"
-            echo -e "${BLUE}║${NC} ${YELLOW}13)${NC} Check for Updates                 ${BLUE}║${NC}"
-            echo -e "${BLUE}║${NC} ${YELLOW}14)${NC} Uninstall Xray                    ${BLUE}║${NC}"
+            echo -e "${CYAN}Port: ${NC}${server_port}"
+            echo -e "${CYAN}SNI: ${NC}${dest_server}"
+            echo -e "${CYAN}DNS Mode: ${NC}$(if [ "$use_fake_dns" = true ]; then echo -e "${GREEN}FakeDNS${NC}"; else echo -e "${YELLOW}Standard${NC}"; fi)"
+            echo -e "${CYAN}TLS Fingerprint: ${NC}${fingerprint}"
+            echo -e "${CYAN}User Count: ${NC}${#user_uuids[@]}"
         fi
         
-        echo -e "${BLUE}║${NC} ${YELLOW}0)${NC} Exit                               ${BLUE}║${NC}"
-        echo -e "${BLUE}╚═══════════════════════════════════════╝${NC}"
         echo
-        read -p "Enter your choice: " choice
+        echo -e "${YELLOW}======== MAIN MENU ========${NC}"
         
-        case $choice in
-            0)
-                clear
-                echo -e "${GREEN}Thank you for using Xray Reality Setup Script!${NC}"
-                exit 0
-                ;;
-            1)
+        if [ "$installed" = false ]; then
+            echo -e "${YELLOW}i)${NC} Install Xray with REALITY"
+        else
+            echo -e "${YELLOW}1)${NC} Change Port (Current: ${server_port})"
+            echo -e "${YELLOW}2)${NC} Change SNI Domain (Current: ${dest_server})"
+            echo -e "${YELLOW}3)${NC} Change DNS Mode (Current: $(if [ "$use_fake_dns" = true ]; then echo "FakeDNS"; else echo "Standard"; fi))"
+            echo -e "${YELLOW}4)${NC} Manage ShortID (Current: ${short_id})"
+            echo -e "${YELLOW}5)${NC} Regenerate Keys"
+            echo -e "${YELLOW}6)${NC} Change TLS Fingerprint (Current: ${fingerprint})"
+            echo -e "${YELLOW}7)${NC} Manage Users"
+            echo -e "${YELLOW}8)${NC} Generate Client Configs"
+            echo -e "${YELLOW}9)${NC} Configure Firewall"
+            echo -e "${YELLOW}10)${NC} Display Service Status"
+            echo -e "${YELLOW}11)${NC} Restart Xray Service"
+            echo -e "${YELLOW}12)${NC} Check for Updates"
+            echo -e "${YELLOW}u)${NC} Uninstall Xray"
+        fi
+        
+        echo -e "${YELLOW}q)${NC} Quit"
+        echo -e "${YELLOW}===========================${NC}"
+        echo
+        
+        read -p "Enter your choice: " menu_choice
+        
+        case $menu_choice in
+            i)
                 if [ "$installed" = false ]; then
-                    # Full installation process
-                    install_dependencies
-                    install_xray
-                    generate_keys
-                    create_config
-                    restart_xray
-                    echo -e "${GREEN}Xray with Reality has been successfully installed!${NC}"
-                    read -p "Press Enter to continue..."
+                    setup_xray
                 else
-                    # Just update configuration
-                    create_config
-                    restart_xray
-                    echo -e "${GREEN}Configuration updated!${NC}"
+                    echo -e "${RED}Xray is already installed.${NC}"
                     read -p "Press Enter to continue..."
                 fi
                 ;;
+            1)
+                if [ "$installed" = true ]; then
+                    change_port
+                    create_config
+                    restart_xray
+                fi
+                ;;
             2)
-                change_sni
+                if [ "$installed" = true ]; then
+                    change_sni
+                    create_config
+                    restart_xray
+                fi
                 ;;
             3)
-                change_port
+                if [ "$installed" = true ]; then
+                    toggle_fake_dns
+                    create_config
+                    restart_xray
+                fi
                 ;;
             4)
-                toggle_fake_dns
+                if [ "$installed" = true ]; then
+                    manage_short_id
+                    create_config
+                    restart_xray
+                fi
                 ;;
             5)
-                manage_short_id
+                if [ "$installed" = true ]; then
+                    regenerate_keys
+                    create_config
+                    restart_xray
+                fi
                 ;;
             6)
                 if [ "$installed" = true ]; then
-                    regenerate_keys
-                else
-                    echo -e "${RED}Xray is not installed yet.${NC}"
-                    read -p "Press Enter to continue..."
+                    change_fingerprint
+                    create_config
+                    restart_xray
                 fi
                 ;;
             7)
                 if [ "$installed" = true ]; then
-                    generate_client_config
-                else
-                    echo -e "${RED}Xray is not installed yet.${NC}"
-                    read -p "Press Enter to continue..."
+                    manage_users
+                    create_config
+                    restart_xray
                 fi
                 ;;
             8)
                 if [ "$installed" = true ]; then
-                    manage_users
-                else
-                    echo -e "${RED}Xray is not installed yet.${NC}"
-                    read -p "Press Enter to continue..."
+                    generate_client_configs
                 fi
                 ;;
             9)
                 if [ "$installed" = true ]; then
-                    change_fingerprint
-                else
-                    echo -e "${RED}Xray is not installed yet.${NC}"
-                    read -p "Press Enter to continue..."
+                    configure_firewall
                 fi
                 ;;
             10)
                 if [ "$installed" = true ]; then
-                    configure_firewall
-                else
-                    echo -e "${RED}Xray is not installed yet.${NC}"
+                    display_status
                     read -p "Press Enter to continue..."
                 fi
                 ;;
             11)
                 if [ "$installed" = true ]; then
-                    display_status
-                    read -p "Press Enter to continue..."
-                else
-                    echo -e "${RED}Xray is not installed yet.${NC}"
+                    restart_xray
                     read -p "Press Enter to continue..."
                 fi
                 ;;
             12)
                 if [ "$installed" = true ]; then
-                    restart_xray
-                    read -p "Press Enter to continue..."
-                else
-                    echo -e "${RED}Xray is not installed yet.${NC}"
-                    read -p "Press Enter to continue..."
-                fi
-                ;;
-            13)
-                if [ "$installed" = true ]; then
                     check_updates
-                else
-                    echo -e "${RED}Xray is not installed yet.${NC}"
-                    read -p "Press Enter to continue..."
                 fi
                 ;;
-            14)
+            u)
                 if [ "$installed" = true ]; then
                     uninstall_xray
-                else
-                    echo -e "${RED}Xray is not installed yet.${NC}"
-                    read -p "Press Enter to continue..."
                 fi
                 ;;
+            q)
+                echo -e "${GREEN}Thank you for using Xray REALITY Setup Script. Goodbye!${NC}"
+                exit 0
+                ;;
             *)
-                echo -e "${RED}Invalid option. Please try again.${NC}"
+                echo -e "${RED}Invalid choice.${NC}"
                 read -p "Press Enter to continue..."
                 ;;
         esac
     done
 }
 
-# Main execution
-check_installation
-main_menu
+# Start the script
+display_banner
+show_menu
