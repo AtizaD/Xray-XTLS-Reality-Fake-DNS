@@ -127,17 +127,57 @@ display_banner() {
 # Function to check if Xray is already installed
 check_installation() {
     echo -e "${BLUE}Checking if Xray is already installed...${NC}"
-    if command -v xray > /dev/null 2>&1; then
-        echo -e "${GREEN}Xray is already installed.${NC}"
-        installed=true
-        
-        # If installed, try to read existing config to get current values
-        if [ -f "$config_file" ]; then
-            read_existing_config
+    
+    # Multiple methods to check Xray installation
+    local xray_paths=(
+        "/usr/local/bin/xray"
+        "/usr/bin/xray"
+        "/opt/xray/xray"
+        "$(which xray)"
+    )
+    
+    local found=false
+    
+    for path in "${xray_paths[@]}"; do
+        if [ -x "$path" ]; then
+            echo -e "${GREEN}Xray found at $path${NC}"
+            installed=true
+            found=true
+            
+            # Try to get version
+            local version_output=$("$path" version 2>/dev/null)
+            if [ -n "$version_output" ]; then
+                echo -e "${CYAN}Xray Version:${NC} $(echo "$version_output" | head -n1)"
+            fi
+            
+            # Try to read existing config
+            if [ -f "$config_file" ]; then
+                read_existing_config
+            fi
+            
+            break
         fi
-    else
-        echo -e "${YELLOW}Xray is not installed.${NC}"
-        installed=false
+    done
+    
+    if [ "$found" = false ]; then
+        echo -e "${YELLOW}Xray not found in standard locations.${NC}"
+        echo -e "${YELLOW}Performing deeper system search...${NC}"
+        
+        # Deeper system search
+        local deep_search=$(find / -type f -name "xray" -executable 2>/dev/null | head -n 1)
+        if [ -n "$deep_search" ]; then
+            echo -e "${GREEN}Xray found at $deep_search${NC}"
+            installed=true
+            
+            # Try to get version
+            local version_output=$("$deep_search" version 2>/dev/null)
+            if [ -n "$version_output" ]; then
+                echo -e "${CYAN}Xray Version:${NC} $(echo "$version_output" | head -n1)"
+            fi
+        else
+            echo -e "${RED}No Xray installation detected.${NC}"
+            installed=false
+        fi
     fi
 }
 
