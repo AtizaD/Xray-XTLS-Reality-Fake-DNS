@@ -275,12 +275,41 @@ install_xray() {
 # Function to generate Reality keys
 generate_keys() {
     echo -e "${BLUE}Generating Reality keys...${NC}"
+    
+    # Alternative method to generate keys
     local key_output=$(xray x25519)
-    private_key=$(echo "$key_output" | grep "Private key:" | cut -d : -f 2 | tr -d ' ')
-    public_key=$(echo "$key_output" | grep "Public key:" | cut -d : -f 2 | tr -d ' ')
-    echo -e "${GREEN}Keys generated successfully.${NC}"
-    echo -e "${CYAN}Private key: ${NC}${private_key}"
-    echo -e "${CYAN}Public key: ${NC}${public_key}"
+    
+    # Extract private and public keys more carefully
+    private_key=$(echo "$key_output" | grep "Private key:" | sed 's/Private key: //' | tr -d ' ')
+    public_key=$(echo "$key_output" | grep "Public key:" | sed 's/Public key: //' | tr -d ' ')
+    
+    # Fallback method if parsing fails
+    if [ -z "$private_key" ] || [ -z "$public_key" ]; then
+        echo -e "${YELLOW}Falling back to alternative key generation method...${NC}"
+        
+        # Generate keys using OpenSSL as a fallback
+        local temp_private_key=$(openssl rand -base64 32)
+        private_key=$(echo "$temp_private_key" | tr -d '=' | tr '/+' '_-')
+        
+        # Use xray to derive public key if possible
+        public_key=$(echo "$private_key" | xray x25519 -i 2>/dev/null || echo "")
+        
+        # If public key generation fails, provide a warning
+        if [ -z "$public_key" ]; then
+            echo -e "${RED}Warning: Could not generate public key automatically.${NC}"
+            echo -e "${YELLOW}You may need to manually configure the public key.${NC}"
+        fi
+    fi
+    
+    # Validate keys
+    if [ -n "$private_key" ]; then
+        echo -e "${GREEN}Keys generated successfully.${NC}"
+        echo -e "${CYAN}Private key: ${NC}${private_key}"
+        echo -e "${CYAN}Public key: ${NC}${public_key}"
+    else
+        echo -e "${RED}Failed to generate Reality keys.${NC}"
+        exit 1
+    fi
 }
 
 # Function to generate shortID
